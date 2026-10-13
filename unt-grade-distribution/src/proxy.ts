@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { checkRequestLimit } from "./lib/rate-limit";
+import { mcpCorsHeaders } from "./lib/mcp-cors";
 
 const LOCKED_EXTENSION_ID = process.env.CHROME_EXTENSION_ID ?? "";
 
@@ -17,6 +18,7 @@ function isAllowedOrigin(origin: string): boolean {
 function corsHeaders(request: NextRequest): Headers {
   const isMcp = request.nextUrl.pathname === "/api/mcp";
   const origin = request.headers.get("origin") ?? "";
+  if (isMcp && origin && !origin.startsWith("chrome-extension://")) return mcpCorsHeaders(request);
   const headers = new Headers();
   if (origin && isAllowedOrigin(origin)) {
     headers.set("Access-Control-Allow-Origin", origin);

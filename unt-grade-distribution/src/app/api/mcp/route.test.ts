@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-import { POST } from "./route";
+import test, { type TestContext } from "node:test";
+import { GET, POST } from "./route";
+
+function configureCors(t: TestContext, value: string | undefined) {
+  const before = process.env.MCP_CORS_ORIGINS;
+  if (value === undefined) delete process.env.MCP_CORS_ORIGINS;
+  else process.env.MCP_CORS_ORIGINS = value;
+  t.after(() => {
+    if (before === undefined) delete process.env.MCP_CORS_ORIGINS;
+    else process.env.MCP_CORS_ORIGINS = before;
+  });
+}
 
 async function call(method: string, id: number, params: object) {
   const response = await POST(new Request("http://localhost/api/mcp", {
@@ -69,6 +79,59 @@ test("MCP rejects malformed JSON and still supports an ordinary tool call", asyn
   const reply = await call("tools/call", 3, { name: "search_grades", arguments: { query: "CSCE" } });
   assert.deepEqual(reply.result.structuredContent, { courses: [], instructors: [] });
   assert.equal(search.mock.callCount(), 1);
+});
+
+test("MCP POST tool calls carry browser CORS without changing the streamed result", async (t) => {
+  configureCors(t, "https://planner.example");
+  const { gradeData } = await import("@/lib/mcp-data");
+  const search = t.mock.method(gradeData, "search", async () => ({ courses: [], instructors: [] }));
+  const response = await POST(new Request("http://localhost/api/mcp", {
+    method: "POST",
+    headers: {
+      Origin: "https://planner.example", "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream", "MCP-Protocol-Version": "2025-11-25",
+    },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/call", params: {
+      name: "search_grades", arguments: { query: "CSCE" },
+    } }),
+  }));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("access-control-allow-origin"), "https://planner.example");
+  assert.equal(response.headers.get("vary"), "Origin");
+  assert.equal(response.headers.get("access-control-expose-headers"), "MCP-Session-Id, Retry-After, X-RateLimit-Remaining");
+  assert.equal(response.headers.has("access-control-allow-credentials"), false);
+  const data = (await response.text()).split("\n").find((line) => line.startsWith("data: "));
+  assert.ok(data);
+  assert.deepEqual(JSON.parse(data.slice(6)).result.structuredContent, { courses: [], instructors: [] });
+  assert.equal(search.mock.callCount(), 1);
+});
+
+test("MCP validation and transport errors carry CORS only for allowed origins", async (t) => {
+  configureCors(t, "https://planner.example");
+  for (const origin of ["https://planner.example", "https://other.example"]) {
+    const cases = [
+      await POST(new Request("http://localhost/api/mcp", { method: "POST", headers: { origin }, body: "{" })),
+      await POST(new Request("http://localhost/api/mcp", { method: "POST", headers: { origin }, body: "[]" })),
+      await POST(new Request("http://localhost/api/mcp", { method: "POST", headers: { origin }, body: JSON.stringify({ padding: "x".repeat(32 * 1024) }) })),
+      await GET(new Request("http://localhost/api/mcp", { headers: { origin } })),
+    ];
+    assert.deepEqual(cases.map((response) => response.status), [400, 400, 413, 405]);
+    for (const response of cases) {
+      if (origin === "https://planner.example") assert.equal(response.headers.get("access-control-allow-origin"), origin);
+      else assert.ok([...response.headers.keys()].every((name) => !name.startsWith("access-control-")));
+      await response.text();
+    }
+  }
+});
+
+test("MCP requests without Origin keep response status, body and headers unchanged", async (t) => {
+  configureCors(t, "*");
+  const response = await POST(new Request("http://localhost/api/mcp", { method: "POST", body: "{" }));
+  assert.equal(response.status, 400);
+  assert.deepEqual(await response.json(), { error: "Invalid JSON body" });
+  assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+  assert.equal(response.headers.has("vary"), false);
+  assert.ok([...response.headers.keys()].every((name) => !name.startsWith("access-control-")));
 });
 
 test("MCP rebuilds consumed streaming requests from fields and removes stale Content-Length", async (t) => {

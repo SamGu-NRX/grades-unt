@@ -2,7 +2,6 @@ import { createMcpHandler } from "mcp-handler";
 import { z } from "zod";
 import { gradeData } from "@/lib/mcp-data";
 import { readBoundedJson, RequestBodyError, requestBodyErrorResponse } from "@/lib/request-body";
-import { withMcpCors } from "@/lib/mcp-cors";
 
 export const runtime = "nodejs";
 
@@ -61,9 +60,7 @@ const handler = createMcpHandler((server) => {
   instructions: "Read-only UNT course and instructor grade data. Search for a course or instructor, then request course distributions. Paths in results are relative to this server's origin.",
 });
 
-export async function GET(request: Request) {
-  return withMcpCors(request, await handler(request));
-}
+export { handler as GET };
 
 export async function POST(request: Request) {
   let message: unknown;
@@ -73,7 +70,7 @@ export async function POST(request: Request) {
     // Modern Streamable HTTP clients send one JSON-RPC message per request.
     if (Array.isArray(message)) throw new RequestBodyError("MCP batch requests are not supported. Send one message per request.", 400);
   } catch (error) {
-    return withMcpCors(request, requestBodyErrorResponse(error));
+    return requestBodyErrorResponse(error);
   }
 
   // The incoming body is consumed now. Construct from fields rather than
@@ -81,11 +78,10 @@ export async function POST(request: Request) {
   // JSON reserialization also makes the original Content-Length stale.
   const headers = new Headers(request.headers);
   headers.delete("Content-Length");
-  const response = await handler(new Request(request.url, {
+  return handler(new Request(request.url, {
     method: request.method,
     headers,
     body: JSON.stringify(message),
     signal: request.signal,
   }));
-  return withMcpCors(request, response);
 }

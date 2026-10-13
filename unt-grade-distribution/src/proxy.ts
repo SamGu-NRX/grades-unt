@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkRequestLimit } from "./lib/rate-limit";
-import { mcpCorsHeaders } from "./lib/mcp-cors";
+import { checkRequestLimit, limitGroup } from "./lib/rate-limit";
 
 const LOCKED_EXTENSION_ID = process.env.CHROME_EXTENSION_ID ?? "";
+
+// Browser apps that may call /api/mcp directly. Comma-separated exact origins.
+function isMcpBrowserOrigin(origin: string): boolean {
+  const origins = process.env.MCP_CORS_ORIGINS ?? "https://untangleapp.vercel.app";
+  return origins.split(",").some((allowed) => allowed.trim() === origin);
+}
 
 function isAllowedOrigin(origin: string): boolean {
   if (origin === "https://untgrades.app" || origin === "https://www.untgrades.app") return true;
@@ -16,11 +21,10 @@ function isAllowedOrigin(origin: string): boolean {
 }
 
 function corsHeaders(request: NextRequest): Headers {
-  const isMcp = request.nextUrl.pathname === "/api/mcp";
+  const isMcp = limitGroup(request.nextUrl.pathname) === "mcp";
   const origin = request.headers.get("origin") ?? "";
-  if (isMcp && origin && !origin.startsWith("chrome-extension://")) return mcpCorsHeaders(request);
   const headers = new Headers();
-  if (origin && isAllowedOrigin(origin)) {
+  if (origin && (isAllowedOrigin(origin) || (isMcp && isMcpBrowserOrigin(origin)))) {
     headers.set("Access-Control-Allow-Origin", origin);
     headers.set("Vary", "Origin");
   }

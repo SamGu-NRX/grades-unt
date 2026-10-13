@@ -7,11 +7,10 @@ import { NextRequest } from "next/server";
 import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { config, proxy } from "./proxy";
 import { NO_STORE_HEADERS } from "./lib/rate-limit";
-import { validateExtensionOrigin } from "./lib/cors";
 
 function configure(t: TestContext, overrides: Record<string, string | undefined> = {}) {
   const keys = new Set([...Object.keys(process.env).filter((key) => key.startsWith("RATE_LIMIT_")),
-    "NODE_ENV", "VERCEL", "CHROME_EXTENSION_ID", "MCP_CORS_ORIGINS", "DATABASE_URL", "DIRECT_URL",
+    "NODE_ENV", "VERCEL", "CHROME_EXTENSION_ID", "DATABASE_URL", "DIRECT_URL",
     "RATE_LIMIT_REDIS_REST_URL", "RATE_LIMIT_REDIS_REST_TOKEN", ...Object.keys(overrides)]);
   const before = Object.fromEntries([...keys].map((key) => [key, process.env[key]]));
   for (const key of keys) delete process.env[key];
@@ -55,7 +54,7 @@ test("Next matcher intercepts every API and encrypted manifest/blob/metadata rou
 });
 
 test("OPTIONS preflights perform no fetch and cannot charge the next real request", async (t) => {
-  configure(t, { MCP_CORS_ORIGINS: "https://untgrades.app" });
+  configure(t);
   const fetchMock = t.mock.method(globalThis, "fetch", async () => Response.json({ result: [1, 0, 0] }));
   for (const path of ["/api/search", "/api/search-log", "/api/mcp", "/encrypted/manifest.json", "/encrypted/blobs/file.bin"]) {
     const response = await proxy(makeRequest(path, { method: "OPTIONS", headers: { origin: "https://untgrades.app" } }));
@@ -81,122 +80,39 @@ test("preflight succeeds without production identity/store configuration", async
 });
 
 test("MCP preflight preserves protocol/session headers and DELETE support", async (t) => {
-  configure(t, { MCP_CORS_ORIGINS: " https://planner.example, http://localhost:3000 " });
-  const fetchMock = t.mock.method(globalThis, "fetch", async () => Response.json({ result: [1, 59, 0] }));
-  const response = await proxy(makeRequest("/api/mcp", { method: "OPTIONS", headers: {
-    origin: "https://planner.example", "access-control-request-method": "POST",
-    "access-control-request-headers": "content-type,accept,mcp-session-id,mcp-protocol-version,last-event-id",
-  } }));
-  assert.equal(response.status, 204);
-  assert.equal(await response.text(), "");
-  assert.equal(response.headers.get("access-control-allow-origin"), "https://planner.example");
-  assert.equal(response.headers.get("vary"), "Origin");
-  assert.equal(response.headers.get("access-control-allow-methods"), "GET, POST, DELETE, OPTIONS");
-  assert.equal(response.headers.get("access-control-allow-headers"), "Content-Type, Accept, MCP-Session-Id, MCP-Protocol-Version, Last-Event-ID");
-  assert.equal(response.headers.get("access-control-max-age"), "86400");
-  assert.equal(response.headers.has("access-control-allow-credentials"), false);
-  assert.equal(fetchMock.mock.callCount(), 0);
-  const actual = await proxy(makeRequest("/api/mcp", { method: "POST", headers: { origin: "https://planner.example" } }));
-  assert.equal(actual.status, 200);
-  assert.equal(actual.headers.get("x-ratelimit-remaining"), "59");
-  assert.equal(fetchMock.mock.callCount(), 1);
-});
-
-test("MCP default allowlist admits only UNTangle", async (t) => {
-  configure(t, { MCP_CORS_ORIGINS: undefined });
-  t.mock.method(globalThis, "fetch", async () => Response.json({ result: [1, 59, 0] }));
-  const allowed = await proxy(makeRequest("/api/mcp", { method: "OPTIONS", headers: { origin: "https://untangleapp.vercel.app" } }));
-  assert.equal(allowed.status, 204);
-  assert.equal(allowed.headers.get("access-control-allow-origin"), "https://untangleapp.vercel.app");
-  assert.equal(allowed.headers.get("vary"), "Origin");
-  const other = await proxy(makeRequest("/api/mcp", { method: "OPTIONS", headers: { origin: "https://planner.example" } }));
-  assert.equal(other.status, 204);
-  assert.equal(other.headers.has("access-control-allow-origin"), false);
-});
-
-test("MCP explicit wildcard permits browser origins without credentials", async (t) => {
-  for (const value of ["*"]) {
-    await t.test(String(value), async (t) => {
-      configure(t, { MCP_CORS_ORIGINS: value });
-      t.mock.method(globalThis, "fetch", async () => Response.json({ result: [1, 59, 0] }));
-      for (const method of ["OPTIONS", "POST"]) {
-        const response = await proxy(makeRequest("/api/mcp", { method, headers: { origin: "https://planner.example" } }));
-        assert.equal(response.status, method === "OPTIONS" ? 204 : 200);
-        assert.equal(response.headers.get("access-control-allow-origin"), "*");
-        assert.equal(response.headers.has("vary"), false);
-        assert.equal(response.headers.has("access-control-allow-credentials"), false);
-      }
-      const otherApi = await proxy(makeRequest("/api/search", { headers: { origin: "https://planner.example" } }));
-      assert.equal(otherApi.headers.has("access-control-allow-origin"), false);
-    });
+  configure(t);
+  const response = await proxy(makeRequest("/api/mcp", { method: "OPTIONS", headers: { origin: "https://untgrades.app" } }));
+  assert.match(response.headers.get("access-control-allow-methods")!, /DELETE/);
+  for (const header of ["MCP-Protocol-Version", "MCP-Session-Id", "Last-Event-ID"]) {
+    assert.ok(response.headers.get("access-control-allow-headers")!.includes(header));
+  }
+  for (const header of ["Retry-After", "X-RateLimit-Remaining", "MCP-Session-Id"]) {
+    assert.ok(response.headers.get("access-control-expose-headers")!.includes(header));
   }
 });
 
-test("MCP allowlist matches exact origins and does not change disallowed request statuses", async (t) => {
-  configure(t, { MCP_CORS_ORIGINS: "https://planner.example, http://localhost:3000" });
+test("MCP allows UNTangle's browser origin, including path aliases, and no other routes", async (t) => {
+  configure(t);
   t.mock.method(globalThis, "fetch", async () => Response.json({ result: [1, 59, 0] }));
-  for (const origin of ["http://localhost:3000", "https://other.example", "https://planner.example.attacker.test", "http://planner.example", "https://planner.example:8443"]) {
+  const untangle = "https://untangleapp.vercel.app";
+  for (const path of ["/api/mcp", "/api/mcp/"]) {
     for (const method of ["OPTIONS", "POST"]) {
-      const response = await proxy(makeRequest("/api/mcp", { method, headers: { origin } }));
-      assert.equal(response.status, method === "OPTIONS" ? 204 : 200);
-      assert.equal(response.headers.get("vary"), "Origin");
-      if (origin === "http://localhost:3000") assert.equal(response.headers.get("access-control-allow-origin"), origin);
-      else assert.ok([...response.headers.keys()].every((name) => !name.startsWith("access-control-")));
+      const response = await proxy(makeRequest(path, { method, headers: { origin: untangle } }));
+      assert.equal(response.headers.get("access-control-allow-origin"), untangle, `${method} ${path}`);
     }
   }
+  const otherRoute = await proxy(makeRequest("/api/search", { method: "OPTIONS", headers: { origin: untangle } }));
+  assert.equal(otherRoute.headers.has("access-control-allow-origin"), false);
+  const otherSite = await proxy(makeRequest("/api/mcp", { method: "OPTIONS", headers: { origin: "https://example.com" } }));
+  assert.equal(otherSite.headers.has("access-control-allow-origin"), false);
 });
 
-test("MCP 429 and 503 responses expose Retry-After and quota headers to allowed browsers", async (t) => {
-  configure(t, { MCP_CORS_ORIGINS: "https://planner.example" });
-  t.mock.method(globalThis, "fetch", async () => Response.json({ result: [0, 0, 1500] }));
-  const rejected = await proxy(makeRequest("/api/mcp", { method: "POST", headers: { origin: "https://planner.example" } }));
-  assert.equal(rejected.status, 429);
-  assert.equal(rejected.headers.get("retry-after"), "2");
-  assert.equal(rejected.headers.get("x-ratelimit-remaining"), "0");
-  assert.equal(rejected.headers.get("access-control-allow-origin"), "https://planner.example");
-  assert.equal(rejected.headers.get("access-control-expose-headers"), "MCP-Session-Id, Retry-After, X-RateLimit-Remaining");
-  assertUncacheable(rejected);
-  const disallowed = await proxy(makeRequest("/api/mcp", { headers: { origin: "https://other.example" } }));
-  assert.equal(disallowed.status, 429);
-  assert.equal(disallowed.headers.get("retry-after"), "2");
-  assert.ok([...disallowed.headers.keys()].every((name) => !name.startsWith("access-control-")));
-
-  delete process.env.RATE_LIMIT_REDIS_REST_URL;
-  delete process.env.RATE_LIMIT_REDIS_REST_TOKEN;
-  const unavailable = await proxy(makeRequest("/api/mcp", { headers: { origin: "https://planner.example" } }));
-  assert.equal(unavailable.status, 503);
-  assert.equal(unavailable.headers.get("retry-after"), "30");
-  assert.equal(unavailable.headers.get("access-control-allow-origin"), "https://planner.example");
-  assert.match(unavailable.headers.get("access-control-expose-headers")!, /Retry-After/);
-  assertUncacheable(unavailable);
-});
-
-test("MCP requests without Origin retain existing proxy headers and quota enforcement", async (t) => {
-  configure(t, { MCP_CORS_ORIGINS: "*" });
-  const fetchMock = t.mock.method(globalThis, "fetch", async () => Response.json({ result: [1, 59, 0] }));
-  const response = await proxy(makeRequest("/api/mcp", { method: "POST" }));
-  assert.equal(response.status, 200);
-  assert.equal(response.headers.get("x-middleware-next"), "1");
-  assert.equal(response.headers.get("x-ratelimit-remaining"), "59");
-  assert.equal(response.headers.has("access-control-allow-origin"), false);
-  assert.equal(response.headers.has("vary"), false);
-  assert.equal(response.headers.get("access-control-allow-headers"), "Content-Type, MCP-Protocol-Version, MCP-Session-Id, Last-Event-ID");
-  assert.equal(response.headers.get("access-control-expose-headers"), "Retry-After, X-RateLimit-Remaining, MCP-Session-Id");
-  assert.equal(fetchMock.mock.callCount(), 1);
-});
-
-test("MCP browser configuration preserves extension CORS and origin mismatch validation", async (t) => {
-  configure(t, { NODE_ENV: "development", MCP_CORS_ORIGINS: "" });
-  const origin = "chrome-extension://test-extension";
-  const request = makeRequest("/api/mcp", { method: "OPTIONS", headers: { origin, "x-extension-id": "test-extension" } });
-  const response = await proxy(request);
-  assert.equal(response.status, 204);
-  assert.equal(response.headers.get("access-control-allow-origin"), origin);
-  assert.equal(response.headers.get("vary"), "Origin");
-  assert.equal(validateExtensionOrigin(request), null);
-  const mismatch = validateExtensionOrigin(makeRequest("/api/mcp", { headers: { origin, "x-extension-id": "other-extension" } }));
-  assert.equal(mismatch?.status, 403);
-  assert.deepEqual(await mismatch?.json(), { error: "Origin mismatch" });
+test("MCP_CORS_ORIGINS replaces the default browser origins", async (t) => {
+  configure(t, { MCP_CORS_ORIGINS: "https://a.example, https://b.example" });
+  const allowed = await proxy(makeRequest("/api/mcp", { method: "OPTIONS", headers: { origin: "https://b.example" } }));
+  assert.equal(allowed.headers.get("access-control-allow-origin"), "https://b.example");
+  const dropped = await proxy(makeRequest("/api/mcp", { method: "OPTIONS", headers: { origin: "https://untangleapp.vercel.app" } }));
+  assert.equal(dropped.headers.has("access-control-allow-origin"), false);
 });
 
 test("static manifest, binary and metadata responses are checked before the file handler", async (t) => {

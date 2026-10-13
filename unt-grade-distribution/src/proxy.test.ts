@@ -102,8 +102,20 @@ test("MCP preflight preserves protocol/session headers and DELETE support", asyn
   assert.equal(fetchMock.mock.callCount(), 1);
 });
 
-test("MCP wildcard default and explicit wildcard permit browser origins without credentials", async (t) => {
-  for (const value of [undefined, "*"]) {
+test("MCP default allowlist admits only UNTangle", async (t) => {
+  configure(t, { MCP_CORS_ORIGINS: undefined });
+  t.mock.method(globalThis, "fetch", async () => Response.json({ result: [1, 59, 0] }));
+  const allowed = await proxy(makeRequest("/api/mcp", { method: "OPTIONS", headers: { origin: "https://untangleapp.vercel.app" } }));
+  assert.equal(allowed.status, 204);
+  assert.equal(allowed.headers.get("access-control-allow-origin"), "https://untangleapp.vercel.app");
+  assert.equal(allowed.headers.get("vary"), "Origin");
+  const other = await proxy(makeRequest("/api/mcp", { method: "OPTIONS", headers: { origin: "https://planner.example" } }));
+  assert.equal(other.status, 204);
+  assert.equal(other.headers.has("access-control-allow-origin"), false);
+});
+
+test("MCP explicit wildcard permits browser origins without credentials", async (t) => {
+  for (const value of ["*"]) {
     await t.test(String(value), async (t) => {
       configure(t, { MCP_CORS_ORIGINS: value });
       t.mock.method(globalThis, "fetch", async () => Response.json({ result: [1, 59, 0] }));

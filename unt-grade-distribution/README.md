@@ -25,9 +25,9 @@ Set `NEXT_PUBLIC_DATA_KEY` in the Vercel project to the value used for the deplo
 
 Course results include section grade counts, aggregate counts, and GPA. GPA uses A through F grades. MCP clients send Streamable HTTP requests with POST.
 
-Browser apps can call `/api/mcp` directly, so requests use the browser's client-IP quota instead of a shared app-server quota. `MCP_CORS_ORIGINS` defaults to `*` because the grade tools are public, read-only, and require no credentials. Browser clients must omit credentials.
+Approved browser apps can call `/api/mcp` directly, so requests use each student's client-IP quota instead of one shared app-server quota. `MCP_CORS_ORIGINS` defaults to `https://untangleapp.vercel.app` (UNTangle). Browser clients must omit credentials.
 
-To restrict browser access, set `MCP_CORS_ORIGINS` to comma-separated exact origins, such as `https://planner.example,http://localhost:3000`. Origins include the scheme and optional port, with no path or trailing slash. Whitespace around entries is ignored. An explicit empty value disables browser CORS. Disallowed origins receive the same HTTP status without access-control headers. CORS is not authentication, and non-browser clients can still call the endpoint.
+To change browser access, set `MCP_CORS_ORIGINS` to comma-separated exact origins, such as `https://untangleapp.vercel.app,http://localhost:3000`, or `*` to allow any site. Origins include the scheme and optional port, with no path or trailing slash. Whitespace around entries is ignored. An explicit empty value disables browser CORS. Disallowed origins receive the same HTTP status without access-control headers. CORS is not authentication, and non-browser clients can still call the endpoint.
 
 Preflight requests return 204 without consuming quota. Browser clients can read `MCP-Session-Id`, `Retry-After`, and `X-RateLimit-Remaining` from actual responses, including errors. This policy applies only to `/api/mcp`; extension origin validation and other API CORS policies are unchanged.
 
